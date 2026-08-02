@@ -1,6 +1,7 @@
 'use client';
 
 import {
+  FIXED_API_BASE_URL,
   getDefaultTextModel,
   getTextModelById,
   loadRegistry,
@@ -25,24 +26,28 @@ function ensureGoogleBaseUrl(baseUrl: string): string {
   return normalized.endsWith('/v1beta') ? normalized.slice(0, -7) : normalized;
 }
 
-export function normalizeModelBaseUrl(protocol: ProviderProtocol, baseUrl: string): string {
+export function normalizeModelBaseUrl(protocol: ProviderProtocol, _baseUrl?: string): string {
+  // 全局固定 API 地址，忽略调用方传入的 baseUrl
   return protocol === 'google'
-    ? ensureGoogleBaseUrl(baseUrl)
-    : ensureOpenAiBaseUrl(baseUrl);
+    ? ensureGoogleBaseUrl(FIXED_API_BASE_URL)
+    : ensureOpenAiBaseUrl(FIXED_API_BASE_URL);
 }
 
-export function normalizeTextModelBaseUrl(protocol: TextProviderProtocol, baseUrl: string): string {
+export function normalizeTextModelBaseUrl(protocol: TextProviderProtocol, _baseUrl?: string): string {
+  // 全局固定 API 地址，忽略调用方传入的 baseUrl
   return protocol === 'google-gemini'
-    ? ensureGoogleBaseUrl(baseUrl)
-    : ensureOpenAiBaseUrl(baseUrl);
+    ? ensureGoogleBaseUrl(FIXED_API_BASE_URL)
+    : ensureOpenAiBaseUrl(FIXED_API_BASE_URL);
 }
 
-export function buildResponsesApiUrl(baseUrl: string): string {
-  return `${ensureOpenAiBaseUrl(baseUrl)}/v1/responses`;
+export function buildResponsesApiUrl(_baseUrl?: string): string {
+  // 全局固定 API 地址
+  return `${ensureOpenAiBaseUrl(FIXED_API_BASE_URL)}/v1/responses`;
 }
 
-export function buildGeminiStreamGenerateContentUrl(baseUrl: string, modelId: string): string {
-  return `${ensureGoogleBaseUrl(baseUrl)}/v1beta/models/${encodeURIComponent(modelId)}:streamGenerateContent?alt=sse`;
+export function buildGeminiStreamGenerateContentUrl(_baseUrl: string | undefined, modelId: string): string {
+  // 全局固定 API 地址
+  return `${ensureGoogleBaseUrl(FIXED_API_BASE_URL)}/v1beta/models/${encodeURIComponent(modelId)}:streamGenerateContent?alt=sse`;
 }
 
 export function getConfiguredTextModel(modelId: string): TextModelConfig | undefined {

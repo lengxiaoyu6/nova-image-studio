@@ -79,21 +79,33 @@ function loadEnvFile() {
 
 loadEnvFile();
 
+/** 全局固定 API 基础地址，拒绝用户自定义（含 localStorage 篡改） */
+const FIXED_API_BASE_URL = 'https://api.oaiapis.com/v1';
+
 function normalizeBaseUrl(url) {
   return String(url || '').trim().replace(/\/+$/, '');
 }
 
 function normalizeProtocolBaseUrl(protocol, url) {
-  const normalized = normalizeBaseUrl(url);
+  // 全局固定 API 地址：忽略任意传入 url（含客户端/localStorage 篡改）
+  // FIXED 可能为 https://api.oaiapis.com/v1，这里去掉末尾 /v1 或 /v1beta，
+  // 后续统一再拼 /v1/... 或 /v1beta/...，避免出现 /v1/v1
+  let normalized = normalizeBaseUrl(FIXED_API_BASE_URL);
   if (!normalized) return '';
-  if (protocol === 'google' || protocol === 'google-gemini') {
-    return normalized.endsWith('/v1beta') ? normalized.slice(0, -7) : normalized;
+  if (normalized.endsWith('/v1beta')) {
+    normalized = normalized.slice(0, -7);
+  } else if (normalized.endsWith('/v1')) {
+    normalized = normalized.slice(0, -3);
   }
-  return normalized.endsWith('/v1') ? normalized.slice(0, -3) : normalized;
+  return normalized;
 }
 
 function resolveNovaApiBaseUrl() {
-  return normalizeBaseUrl(getRuntimeEnv().NOVA_API_BASE_URL) || 'https://api.openai.com';
+  // 全局固定；返回去掉末尾 /v1 的根地址，供后续拼接 /v1/... 使用
+  let normalized = normalizeBaseUrl(FIXED_API_BASE_URL);
+  if (normalized.endsWith('/v1beta')) normalized = normalized.slice(0, -7);
+  else if (normalized.endsWith('/v1')) normalized = normalized.slice(0, -3);
+  return normalized;
 }
 
 function hashPromptGalleryPassword(password) {
@@ -103,6 +115,7 @@ function hashPromptGalleryPassword(password) {
 }
 
 const PORT = Number(process.env.PORT || 3000);
+
 const HOSTNAME = process.env.HOSTNAME || '0.0.0.0';
 const DB_PATH = process.env.NOVA_TASK_DB || path.join(__dirname, 'nova-tasks.sqlite');
 const TASK_TTL_MS = 12 * 60 * 60 * 1000;
@@ -630,7 +643,8 @@ function normalizeGptImageAdvancedParams(params = {}) {
 function validateCreatePayload(body) {
   if (!body || typeof body !== 'object') throw new Error('请求体不能为空');
   if (typeof body.apiKey !== 'string' || body.apiKey.trim().length === 0) throw new Error('缺少 API 密钥');
-  if (typeof body.baseUrl !== 'string' || body.baseUrl.trim().length === 0) throw new Error('缺少 API 基础地址');
+  // baseUrl 已全局固定，不再要求客户端提供
+  // if (typeof body.baseUrl !== 'string' || body.baseUrl.trim().length === 0) throw new Error('缺少 API 基础地址');
   if (!VALID_PROTOCOLS.has(body.protocol)) throw new Error('协议类型无效，必须为 google 或 openai');
   if (body.mode !== 'text-to-image' && body.mode !== 'image-to-image') throw new Error('任务模式无效');
   if (typeof body.prompt !== 'string' || body.prompt.trim().length === 0) throw new Error('提示词不能为空');
@@ -638,7 +652,19 @@ function validateCreatePayload(body) {
   if (!Number.isInteger(body.parallelCount) || body.parallelCount < 1 || body.parallelCount > 4) throw new Error('并发数量无效');
 
   if (!Array.isArray(body.images)) body.images = [];
-  body.baseUrl = normalizeProtocolBaseUrl(body.protocol, body.baseUrl);
+  // 强制使用固定 API 地址，忽略客户端传入的 baseUrl
+  // 模型名可覆盖错误的 protocol（防止前端旧配置把 Grok 标成 google）
+  const modelName = String(body.model || '').toLowerCase();
+  if (modelName.includes('grok') || modelName.startsWith('gpt-image')) {
+    body.protocol = 'openai';
+  }
+  {
+    const modelName = String(body.model || '').toLowerCase();
+    if (modelName.includes('grok') || modelName.startsWith('gpt-image')) {
+      body.protocol = 'openai';
+    }
+  }
+  body.baseUrl = normalizeProtocolBaseUrl(body.protocol, FIXED_API_BASE_URL);
   if (!body.baseUrl) throw new Error('缺少 API 基础地址');
   // 开源版：不做模型级参数规范化，前端负责传递正确的参数，后端无条件透传
 }
@@ -790,6 +816,56 @@ function resolveGptImageRequestSize(request) {
 
 function getGptImageRequestAdvancedParams(request) {
   return normalizeGptImageAdvancedParams(request);
+}
+
+
+function isGrokImageModel(model) {
+  return String(model || '').toLowerCase().includes('grok');
+}
+
+/** Grok Imagine 使用 aspect_ratio + resolution，而不是 OpenAI 的 size/quality */
+function resolveGrokImageParams(request) {
+  const outputSize = String(request.outputSize || '1K').toUpperCase();
+  const resolution = outputSize === '2K' || outputSize === '4K' ? '2k' : '1k';
+
+  let aspectRatio = String(request.aspectRatio || '1:1').trim();
+  if (!aspectRatio || aspectRatio === 'auto') {
+    aspectRatio = '1:1';
+  }
+
+  return { resolution, aspect_ratio: aspectRatio };
+}
+
+function createGrokImageRequestInit(apiKey, request) {
+  const { resolution, aspect_ratio } = resolveGrokImageParams(request);
+  const payload = {
+    model: request.model,
+    prompt: request.prompt,
+    n: 1,
+    aspect_ratio,
+    resolution,
+    response_format: 'b64_json',
+  };
+
+  // 图生图：xAI 要求 JSON image 对象，而不是 GPT 的 multipart
+  if (request.mode === 'image-to-image' && Array.isArray(request.images) && request.images.length > 0) {
+    const first = request.images[0];
+    const mimeType = first.mimeType || 'image/png';
+    const dataUrl = `data:${mimeType};base64,${first.data}`;
+    payload.image = {
+      url: dataUrl,
+      type: 'image_url',
+    };
+  }
+
+  return {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(payload),
+  };
 }
 
 function createGptImageRequestInit(apiKey, request, resolvedSize, options = {}) {
@@ -1034,14 +1110,23 @@ function isImageStreamUnsupportedError(error) {
 }
 
 async function requestGptImage(apiKey, request, resolvedSize, options = {}) {
-  const baseUrl = options.baseUrl || resolveNovaApiBaseUrl();
+  // 根地址去掉 /v1，再拼标准 OpenAI Images 路径，避免 /v1/v1
+  const root = resolveNovaApiBaseUrl();
   const endpoint = request.mode === 'image-to-image'
     ? '/v1/images/edits'
     : '/v1/images/generations';
-  const response = await fetchWithTimeout(
-    `${baseUrl}${endpoint}`,
-    createGptImageRequestInit(apiKey, request, resolvedSize, options)
+  const targetUrl = `${root}${endpoint}`;
+
+  // Grok Imagine 请求体与 GPT Image 不同：aspect_ratio + resolution，禁止 quality/size 等字段
+  const init = isGrokImageModel(request.model)
+    ? createGrokImageRequestInit(apiKey, request)
+    : createGptImageRequestInit(apiKey, request, resolvedSize, options);
+
+  console.log(
+    `[image] request: model=${request.model} mode=${request.mode} url=${targetUrl} grok=${isGrokImageModel(request.model)}`
   );
+
+  const response = await fetchWithTimeout(targetUrl, init);
   return parseGptImageResponse(response);
 }
 
@@ -1077,12 +1162,18 @@ async function fetchWithTimeout(url, init) {
 }
 
 async function generateNovaImage(apiKey, request) {
-  // 开源版：根据前端传入的 protocol 字段路由到对应的 API 协议
-  const baseUrl = request.baseUrl || resolveNovaApiBaseUrl();
-  if (request.protocol === 'openai') {
+  const baseUrl = resolveNovaApiBaseUrl();
+  const modelName = String(request.model || '').toLowerCase();
+  const forceOpenAiImages =
+    request.protocol === 'openai'
+    || modelName.includes('grok')
+    || modelName.startsWith('gpt-image');
+
+  console.log(`[image] route: model=${request.model} protocol=${request.protocol} forceOpenAi=${forceOpenAiImages}`);
+
+  if (forceOpenAiImages) {
     return requestGptImage(apiKey, request, resolveGptImageRequestSize(request), { baseUrl });
   }
-  // 默认走 Google Gemini 协议
   return generateNovaGeminiImage(apiKey, request, { baseUrl });
 }
 
@@ -1094,7 +1185,7 @@ function extractGeminiImagePayload(data) {
 }
 
 async function generateNovaGeminiImage(apiKey, request, options = {}) {
-  const baseUrl = options.baseUrl || resolveNovaApiBaseUrl();
+  const baseUrl = resolveNovaApiBaseUrl();
   const parts = [
     { text: request.prompt },
     ...request.images.map(img => ({ inlineData: { data: img.data, mimeType: img.mimeType } })),
@@ -1588,13 +1679,14 @@ async function handleApi(req, res, pathname) {
     if (req.method === 'POST' && apiPathname === '/api/nova/proxy/text') {
       try {
         const body = await readJsonBody(req);
-        const { protocol, baseUrl, apiKey, model, stream, requestBody } = body;
-        if (!baseUrl || !apiKey) {
-          sendJson(res, 400, { error: 'Missing baseUrl or apiKey' });
+        const { protocol, apiKey, model, stream, requestBody } = body;
+        if (!apiKey) {
+          sendJson(res, 400, { error: 'Missing apiKey' });
           return true;
         }
 
-        const normalizedBaseUrl = normalizeProtocolBaseUrl(protocol, baseUrl);
+        // 强制使用固定 API 地址，忽略客户端传入的 baseUrl
+        const normalizedBaseUrl = normalizeProtocolBaseUrl(protocol, FIXED_API_BASE_URL);
         let targetUrl;
         const authHeaders = { 'Content-Type': 'application/json' };
 
@@ -1677,15 +1769,15 @@ async function handleApi(req, res, pathname) {
     if (req.method === 'GET' && apiPathname === '/api/nova/proxy/models') {
       try {
         const parsed = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
-        const baseUrl = parsed.searchParams.get('baseUrl');
         const apiKey = parsed.searchParams.get('apiKey');
         const protocol = parsed.searchParams.get('protocol') || 'openai';
-        if (!baseUrl || !apiKey) {
-          sendJson(res, 400, { error: 'Missing baseUrl or apiKey' });
+        if (!apiKey) {
+          sendJson(res, 400, { error: 'Missing apiKey' });
           return true;
         }
 
-        const normalizedBaseUrl = normalizeProtocolBaseUrl(protocol, baseUrl);
+        // 强制使用固定 API 地址，忽略客户端传入的 baseUrl
+        const normalizedBaseUrl = normalizeProtocolBaseUrl(protocol, FIXED_API_BASE_URL);
         let modelsUrl = `${normalizedBaseUrl}/v1/models`;
         const headers = {};
 

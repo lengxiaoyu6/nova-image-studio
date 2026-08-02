@@ -1,3 +1,4 @@
+import { FIXED_API_BASE_URL } from '@/lib/nova-models';
 // Agent 模式的浏览器直连客户端
 // 文本对话与视觉描述统一通过 /api/nova/proxy/text，按文本协议动态转发。
 

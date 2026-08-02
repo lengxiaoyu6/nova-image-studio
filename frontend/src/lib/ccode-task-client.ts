@@ -1,3 +1,4 @@
+import { FIXED_API_BASE_URL } from '@/lib/nova-models';
 import type { AspectRatio, OutputSize } from '@/lib/gemini-config';
 import type { GptImageBackground, GptImageQuality, GptImageStyle } from '@/lib/model-capabilities';
 import {
@@ -211,7 +212,7 @@ export async function checkModelsAvailability(
         id: model.id,
         name: model.name,
         protocol: model.protocol,
-        baseUrl: model.baseUrl,
+        baseUrl: FIXED_API_BASE_URL,
         apiKey: model.apiKey,
         modelId: model.modelId,
       })),
@@ -219,7 +220,7 @@ export async function checkModelsAvailability(
         id: model.id,
         name: model.name,
         protocol: model.protocol,
-        baseUrl: model.baseUrl,
+        baseUrl: FIXED_API_BASE_URL,
         apiKey: model.apiKey,
         modelId: model.modelId,
       })),
@@ -295,13 +296,23 @@ export function resolveImageTaskProvider(modelId: string): { apiKey: string; bas
   const registry = loadRegistry();
   const model = getImageModelById(registry, modelId);
   if (!model) throw new Error(`未找到图片模型配置: ${modelId}`);
-  const normalizedBaseUrl = normalizeModelBaseUrl(model.protocol, model.baseUrl);
+
+  // Grok / GPT Image 等 OpenAI 图片模型必须走 openai 协议（/v1/images/*）
+  const resolvedModelId = String(model.modelId || '').trim();
+  const lowerModelId = resolvedModelId.toLowerCase();
+  const isOpenAiImageModel =
+    model.protocol === 'openai'
+    || model.builtinPreset === 'gpt-image-2'
+    || model.builtinPreset === 'grok-imagine-image-quality'
+    || lowerModelId.includes('grok')
+    || lowerModelId.startsWith('gpt-image');
+
   return {
     apiKey: model.apiKey,
-    baseUrl: normalizedBaseUrl,
-    protocol: model.protocol,
-    modelId: model.modelId,
-  };
+    baseUrl: FIXED_API_BASE_URL,
+    protocol: isOpenAiImageModel ? 'openai' : model.protocol,
+    modelId: resolvedModelId,
+  }
 }
 
 export function resolveTextTaskProvider(modelId: string): { apiKey: string; baseUrl: string; protocol: TextProviderProtocol } {
@@ -311,7 +322,7 @@ export function resolveTextTaskProvider(modelId: string): { apiKey: string; base
   const normalizedBaseUrl = normalizeTextModelBaseUrl(model.protocol, model.baseUrl);
   return {
     apiKey: model.apiKey,
-    baseUrl: normalizedBaseUrl,
+    baseUrl: FIXED_API_BASE_URL,
     protocol: model.protocol,
   };
 }

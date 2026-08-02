@@ -1,5 +1,7 @@
 'use client';
 
+import { FIXED_API_BASE_URL } from '@/lib/nova-models';
+
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createNovaTask, getNovaTask, ackNovaTask, resolveImageTaskProvider, type ImageReference } from '@/lib/ccode-task-client';
 import { novaTaskSocket } from '@/lib/ccode-task-socket';
@@ -282,7 +284,7 @@ export function useGifWorkflow(): UseGifWorkflowResult {
       setIsApiKeyMissing(true);
       throw new Error('请先完成 GIF 图片模型配置');
     }
-    if (!provider.apiKey || !provider.baseUrl) {
+    if (!provider.apiKey) {
       setIsApiKeyMissing(true);
       throw new Error('请先完成 GIF 图片模型配置');
     }
@@ -334,7 +336,7 @@ export function useGifWorkflow(): UseGifWorkflowResult {
       // TODO: 从模型注册表读取实际的 baseUrl 和 protocol
       const serverTaskId = await createNovaTask({
         apiKey: provider.apiKey,
-        baseUrl: provider.baseUrl,
+        baseUrl: FIXED_API_BASE_URL,
         protocol: provider.protocol,
         mode: 'image-to-image',
         prompt: finalPrompt,

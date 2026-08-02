@@ -37,6 +37,7 @@ import {
   BUILTIN_IMAGE_PRESET_OPTIONS,
   DEFAULT_DEFAULTS,
   DEFAULT_TEXT_MODEL_TEMPLATES,
+  FIXED_API_BASE_URL,
   generateModelId,
   getDefaultTextModelTemplate,
   getCompleteImageModels,
@@ -83,7 +84,7 @@ function createImageModelDraft(): ImageModelConfig {
     name: '',
     modelId: '',
     apiKey: '',
-    baseUrl: preset.baseUrl,
+    baseUrl: FIXED_API_BASE_URL,
     builtinPreset: preset.id,
     maxRefImages: preset.maxRefImages,
     maxOutputSize: preset.maxOutputSize,
@@ -99,9 +100,18 @@ function createTextModelDraft(): TextModelConfig {
     name: '',
     modelId: '',
     apiKey: '',
-    baseUrl: template.baseUrl,
+    baseUrl: FIXED_API_BASE_URL,
     note: template.note,
   };
+}
+
+
+function forceFixedBaseUrlOnImageModels(models: ImageModelConfig[]): ImageModelConfig[] {
+  return models.map((model) => ({ ...model, baseUrl: FIXED_API_BASE_URL }));
+}
+
+function forceFixedBaseUrlOnTextModels(models: TextModelConfig[]): TextModelConfig[] {
+  return models.map((model) => ({ ...model, baseUrl: FIXED_API_BASE_URL }));
 }
 
 function isCompleteImageModel(model: ImageModelConfig): boolean {
@@ -202,13 +212,15 @@ export function SettingsModal({ isOpen, onClose, onApiKeyChange }: SettingsModal
   const handleUpdateImageModel = (id: string, patch: Partial<ImageModelConfig>) => {
     setImageModels((prev) => prev.map((model) => {
       if (model.id !== id) return model;
-      const next = { ...model, ...patch };
+      // baseUrl 全局固定，忽略任何补丁中的自定义地址（含 localStorage 篡改回流）
+      const { baseUrl: _ignoredBaseUrl, ...safePatch } = patch;
+      const next = { ...model, ...safePatch, baseUrl: FIXED_API_BASE_URL };
       if (patch.builtinPreset) {
         const preset = BUILTIN_IMAGE_PRESETS[patch.builtinPreset];
         next.protocol = preset.protocol;
         next.name = preset.name;
         next.modelId = preset.modelId;
-        next.baseUrl = preset.baseUrl;
+        next.baseUrl = FIXED_API_BASE_URL;
         next.maxRefImages = preset.maxRefImages;
         next.maxOutputSize = preset.maxOutputSize;
         next.supportsAdvancedParams = preset.supportsAdvancedParams;
@@ -245,13 +257,18 @@ export function SettingsModal({ isOpen, onClose, onApiKeyChange }: SettingsModal
       protocol: template.protocol,
       name: template.name,
       modelId: template.modelId,
-      baseUrl: template.baseUrl,
+      baseUrl: FIXED_API_BASE_URL,
       note: template.note || getTextProviderDescription(template.protocol),
     });
   };
 
   const handleUpdateTextModel = (id: string, patch: Partial<TextModelConfig>) => {
-    setTextModels((prev) => prev.map((model) => (model.id === id ? { ...model, ...patch } : model)));
+    setTextModels((prev) => prev.map((model) => {
+      if (model.id !== id) return model;
+      // baseUrl 全局固定，忽略任何补丁中的自定义地址
+      const { baseUrl: _ignoredBaseUrl, ...safePatch } = patch;
+      return { ...model, ...safePatch, baseUrl: FIXED_API_BASE_URL };
+    }));
   };
 
   const handleDeleteTextModel = (id: string) => {
@@ -287,10 +304,15 @@ export function SettingsModal({ isOpen, onClose, onApiKeyChange }: SettingsModal
       return;
     }
 
+    const fixedImageModels = forceFixedBaseUrlOnImageModels(imageModels);
+    const fixedTextModels = forceFixedBaseUrlOnTextModels(textModels);
+    setImageModels(fixedImageModels);
+    setTextModels(fixedTextModels);
+
     const registry = {
-      imageModels,
-      textModels,
-      defaults: normalizeDefaults(defaults, imageModels, textModels),
+      imageModels: fixedImageModels,
+      textModels: fixedTextModels,
+      defaults: normalizeDefaults(defaults, fixedImageModels, fixedTextModels),
     };
 
     saveRegistry(registry);
@@ -410,7 +432,7 @@ export function SettingsModal({ isOpen, onClose, onApiKeyChange }: SettingsModal
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="space-y-1">
                 <p className="text-sm font-medium">模型级独立配置</p>
-                <p className="text-xs text-muted-foreground">每个模型单独记录协议、Base URL、API Key。外部只显示配置完整的模型。</p>
+                <p className="text-xs text-muted-foreground">每个模型单独记录协议与 API Key；API 地址已全局固定。外部只显示配置完整的模型。</p>
               </div>
               <Button onClick={persistRegistry} className="gap-2">
                 <Save className="w-4 h-4" />
@@ -478,8 +500,8 @@ export function SettingsModal({ isOpen, onClose, onApiKeyChange }: SettingsModal
                       <Input value={selectedImageModel.modelId} onChange={(event) => handleUpdateImageModel(selectedImageModel.id, { modelId: event.target.value })} />
                     </div>
                     <div className="space-y-2">
-                      <label className="text-xs text-muted-foreground">Base URL</label>
-                      <Input value={selectedImageModel.baseUrl} onChange={(event) => handleUpdateImageModel(selectedImageModel.id, { baseUrl: event.target.value })} />
+                      <label className="text-xs text-muted-foreground">API 地址（固定）</label>
+                      <Input value={FIXED_API_BASE_URL} readOnly disabled className="opacity-80" />
                     </div>
                     <div className="space-y-2">
                       <label className="text-xs text-muted-foreground">API Key</label>
@@ -590,8 +612,8 @@ export function SettingsModal({ isOpen, onClose, onApiKeyChange }: SettingsModal
                       <Input value={selectedTextModel.modelId} onChange={(event) => handleUpdateTextModel(selectedTextModel.id, { modelId: event.target.value })} />
                     </div>
                     <div className="space-y-2">
-                      <label className="text-xs text-muted-foreground">Base URL</label>
-                      <Input value={selectedTextModel.baseUrl} onChange={(event) => handleUpdateTextModel(selectedTextModel.id, { baseUrl: event.target.value })} />
+                      <label className="text-xs text-muted-foreground">API 地址（固定）</label>
+                      <Input value={FIXED_API_BASE_URL} readOnly disabled className="opacity-80" />
                     </div>
                     <div className="space-y-2">
                       <label className="text-xs text-muted-foreground">API Key</label>
@@ -805,7 +827,7 @@ export function SettingsModal({ isOpen, onClose, onApiKeyChange }: SettingsModal
                 </summary>
                 <ul className="mt-3 list-disc list-inside space-y-2 text-muted-foreground">
                   <li>本站为本地优先应用：模型配置、任务历史、设置与生成图片默认保存在你的浏览器本地。</li>
-                  <li>每个模型的 API Key 和 Base URL 仅用于调用你自己配置的上游服务。</li>
+                  <li>每个模型的 API Key 保存在本地；API 地址已全局固定，请求只发送到固定上游服务。</li>
                   <li>生图、反推、Agent、提示词优化等功能会把你当前选择的提示词、参考图或对话内容发送到对应模型配置的上游接口。</li>
                   <li>备份文件可能包含模型配置、本地任务记录与图片数据，请自行妥善保管。</li>
                 </ul>

@@ -1,5 +1,6 @@
 'use client';
 
+import { sanitizeRegistryBaseUrls } from '@/lib/nova-models';
 import { zipSync, unzipSync, strToU8 } from 'fflate';
 import localforage from 'localforage';
 
@@ -411,6 +412,10 @@ function importLocalStorage(data: unknown): void {
                 if (!hasImageModels || !hasTextModels || !hasDefaults) {
                     continue;
                 }
+                // 备份导入也强制固定 API 地址，防止通过备份篡改 baseUrl
+                const sanitized = sanitizeRegistryBaseUrls(parsed as Partial<import('@/lib/nova-models').NovaModelRegistry>);
+                localStorage.setItem(key, JSON.stringify(sanitized));
+                continue;
             } catch {
                 continue;
             }

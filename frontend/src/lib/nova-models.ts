@@ -13,7 +13,8 @@ export type BuiltinImagePresetId =
   | 'gemini-3-pro-image-preview'
   | 'gemini-3.1-flash-image-preview'
   | 'gemini-3.1-flash-lite-image'
-  | 'gpt-image-2';
+  | 'gpt-image-2'
+  | 'grok-imagine-image-quality';
 
 export interface ImageModelConfig {
   id: string;
@@ -66,13 +67,27 @@ export interface NovaModelRegistry {
 
 const REGISTRY_KEY = 'nova-model-registry';
 
+/** 全局固定 API 基础地址，用户不可修改 */
+export const FIXED_API_BASE_URL = 'https://api.oaiapis.com/v1';
+
+/** 始终返回固定 API 地址，忽略任何用户/本地存储输入 */
+export function getFixedApiBaseUrl(_ignored?: string): string {
+  return FIXED_API_BASE_URL;
+}
+
+/** 将任意模型配置的 baseUrl 强制写回固定地址 */
+export function withFixedApiBaseUrl<T extends { baseUrl?: string }>(model: T): T {
+  return { ...model, baseUrl: FIXED_API_BASE_URL };
+}
+
+
 export const BUILTIN_IMAGE_PRESETS: Record<BuiltinImagePresetId, BuiltinImagePreset> = {
   'gemini-2.5-flash-image': {
     id: 'gemini-2.5-flash-image',
     protocol: 'google',
     name: 'Banana',
     modelId: 'gemini-2.5-flash-image',
-    baseUrl: 'https://generativelanguage.googleapis.com',
+    baseUrl: FIXED_API_BASE_URL,
     maxRefImages: 3,
     maxOutputSize: '1K',
     supportsAdvancedParams: false,
@@ -82,7 +97,7 @@ export const BUILTIN_IMAGE_PRESETS: Record<BuiltinImagePresetId, BuiltinImagePre
     protocol: 'google',
     name: 'Banana Pro',
     modelId: 'gemini-3-pro-image-preview',
-    baseUrl: 'https://generativelanguage.googleapis.com',
+    baseUrl: FIXED_API_BASE_URL,
     maxRefImages: 14,
     maxOutputSize: '4K',
     supportsAdvancedParams: false,
@@ -92,7 +107,7 @@ export const BUILTIN_IMAGE_PRESETS: Record<BuiltinImagePresetId, BuiltinImagePre
     protocol: 'google',
     name: 'Banana 2',
     modelId: 'gemini-3.1-flash-image-preview',
-    baseUrl: 'https://generativelanguage.googleapis.com',
+    baseUrl: FIXED_API_BASE_URL,
     maxRefImages: 14,
     maxOutputSize: '4K',
     supportsAdvancedParams: false,
@@ -102,7 +117,7 @@ export const BUILTIN_IMAGE_PRESETS: Record<BuiltinImagePresetId, BuiltinImagePre
     protocol: 'google',
     name: 'Banana 2 Lite',
     modelId: 'gemini-3.1-flash-lite-image',
-    baseUrl: 'https://generativelanguage.googleapis.com',
+    baseUrl: FIXED_API_BASE_URL,
     maxRefImages: 14,
     maxOutputSize: '1K',
     supportsAdvancedParams: false,
@@ -112,10 +127,20 @@ export const BUILTIN_IMAGE_PRESETS: Record<BuiltinImagePresetId, BuiltinImagePre
     protocol: 'openai',
     name: 'GPT Image 2',
     modelId: 'gpt-image-2',
-    baseUrl: 'https://api.openai.com',
+    baseUrl: FIXED_API_BASE_URL,
     maxRefImages: 16,
     maxOutputSize: '4K',
     supportsAdvancedParams: true,
+  },
+  'grok-imagine-image-quality': {
+    id: 'grok-imagine-image-quality',
+    protocol: 'openai',
+    name: 'Grok',
+    modelId: 'grok-imagine-image-quality',
+    baseUrl: FIXED_API_BASE_URL,
+    maxRefImages: 16,
+    maxOutputSize: '2K',
+    supportsAdvancedParams: false,
   },
 };
 
@@ -129,28 +154,28 @@ export const DEFAULT_TEXT_MODEL_TEMPLATES = [
     protocol: 'openai-responses' as const,
     name: 'GPT 5.4 Mini',
     modelId: 'gpt-5.4-mini',
-    baseUrl: 'https://api.openai.com',
+    baseUrl: FIXED_API_BASE_URL,
     note: getTextProviderDescription('openai-responses'),
   },
   {
     protocol: 'google-gemini' as const,
     name: 'Gemini 2.5 Flash',
     modelId: 'gemini-2.5-flash',
-    baseUrl: 'https://generativelanguage.googleapis.com',
+    baseUrl: FIXED_API_BASE_URL,
     note: getTextProviderDescription('google-gemini'),
   },
   {
     protocol: 'anthropic-messages' as const,
     name: 'Claude Sonnet',
     modelId: 'claude-sonnet-4-20250514',
-    baseUrl: 'https://api.anthropic.com',
+    baseUrl: FIXED_API_BASE_URL,
     note: getTextProviderDescription('anthropic-messages'),
   },
   {
     protocol: 'openai-chat-completions' as const,
     name: 'OpenAI Compatible Chat',
     modelId: 'gpt-4o-mini',
-    baseUrl: 'https://api.openai.com',
+    baseUrl: FIXED_API_BASE_URL,
     note: getTextProviderDescription('openai-chat-completions'),
   },
 ];
@@ -185,6 +210,8 @@ function normalizeImageOutputSize(value: unknown, fallback: ImageOutputSize): Im
 function inferBuiltinPresetId(raw: Partial<ImageModelConfig>): BuiltinImagePresetId {
   const candidate = raw.builtinPreset || raw.id || raw.modelId;
   if (isBuiltinImagePresetId(candidate)) return candidate;
+  const modelId = String(raw.modelId || raw.id || '').toLowerCase();
+  if (modelId.includes('grok')) return 'grok-imagine-image-quality';
   if (String(raw.protocol || '').trim() === 'google') return 'gemini-3-pro-image-preview';
   return 'gpt-image-2';
 }
@@ -195,14 +222,15 @@ function normalizeImageModelConfig(raw: Partial<ImageModelConfig>): ImageModelCo
   const id = String(raw.id || '').trim();
   if (!id) return null;
 
-  const protocol = isProviderProtocol(raw.protocol) ? raw.protocol : preset.protocol;
+  // 协议以预设为准，避免旧配置残留 google 导致 Grok/GPT Image 误走 Gemini
+  const protocol = preset.protocol;
   return {
     id,
     protocol,
     name: String(raw.name || '').trim(),
-    modelId: String(raw.modelId || '').trim(),
+    modelId: String(raw.modelId || '').trim() || preset.modelId,
     apiKey: String(raw.apiKey || '').trim(),
-    baseUrl: String(raw.baseUrl || preset.baseUrl).trim(),
+    baseUrl: FIXED_API_BASE_URL,
     builtinPreset: presetId,
     maxRefImages: Number.isFinite(raw.maxRefImages) && Number(raw.maxRefImages) > 0
       ? Math.max(1, Math.floor(Number(raw.maxRefImages)))
@@ -225,7 +253,7 @@ function normalizeTextModelConfig(raw: Partial<TextModelConfig>): TextModelConfi
     name: String(raw.name || '').trim(),
     modelId: String(raw.modelId || '').trim(),
     apiKey: String(raw.apiKey || '').trim(),
-    baseUrl: String(raw.baseUrl || template.baseUrl).trim(),
+    baseUrl: FIXED_API_BASE_URL,
     note: typeof raw.note === 'string' ? raw.note : (template.note || getTextProviderDescription(protocol)),
   };
 }
@@ -301,18 +329,46 @@ export function loadRegistry(): NovaModelRegistry {
     return getInitialRegistry();
   }
 
-  const parsed = JSON.parse(raw) as Partial<NovaModelRegistry>;
-  const imageModels = ensureImageModels(parsed.imageModels);
-  const textModels = ensureTextModels(parsed.textModels);
+  let parsed: Partial<NovaModelRegistry> = {};
+  try {
+    parsed = JSON.parse(raw) as Partial<NovaModelRegistry>;
+  } catch {
+    return getInitialRegistry();
+  }
+
+  // Never trust baseUrl from localStorage
+  const imageModels = ensureImageModels(parsed.imageModels).map((model) => ({
+    ...model,
+    baseUrl: FIXED_API_BASE_URL,
+  }));
+  const textModels = ensureTextModels(parsed.textModels).map((model) => ({
+    ...model,
+    baseUrl: FIXED_API_BASE_URL,
+  }));
   const defaults = ensureDefaults(parsed.defaults, imageModels, textModels);
-  return { imageModels, textModels, defaults };
+  const registry: NovaModelRegistry = { imageModels, textModels, defaults };
+
+  // Always rewrite storage so tampering cannot persist
+  try {
+    localStorage.setItem(REGISTRY_KEY, JSON.stringify(registry));
+  } catch {
+    // ignore
+  }
+
+  return registry;
 }
 
 export function saveRegistry(registry: NovaModelRegistry): void {
   if (typeof window === 'undefined') return;
 
-  const imageModels = ensureImageModels(registry.imageModels);
-  const textModels = ensureTextModels(registry.textModels);
+  const imageModels = ensureImageModels(registry.imageModels).map((model) => ({
+    ...model,
+    baseUrl: FIXED_API_BASE_URL,
+  }));
+  const textModels = ensureTextModels(registry.textModels).map((model) => ({
+    ...model,
+    baseUrl: FIXED_API_BASE_URL,
+  }));
   const normalized: NovaModelRegistry = {
     imageModels,
     textModels,
@@ -322,12 +378,32 @@ export function saveRegistry(registry: NovaModelRegistry): void {
   localStorage.setItem(REGISTRY_KEY, JSON.stringify(normalized));
 }
 
+
+/** 清洗注册表中所有 baseUrl（用于备份导入等外部写入路径） */
+export function sanitizeRegistryBaseUrls(registry: Partial<NovaModelRegistry> | null | undefined): NovaModelRegistry {
+  const imageModels = ensureImageModels(registry?.imageModels).map((model) => ({
+    ...model,
+    baseUrl: FIXED_API_BASE_URL,
+  }));
+  const textModels = ensureTextModels(registry?.textModels).map((model) => ({
+    ...model,
+    baseUrl: FIXED_API_BASE_URL,
+  }));
+  return {
+    imageModels,
+    textModels,
+    defaults: ensureDefaults(registry?.defaults, imageModels, textModels),
+  };
+}
+
 export function getImageModelById(registry: NovaModelRegistry, id: string): ImageModelConfig | undefined {
-  return registry.imageModels.find((model) => model.id === id);
+  const model = registry.imageModels.find((item) => item.id === id);
+  return model ? { ...model, baseUrl: FIXED_API_BASE_URL } : undefined;
 }
 
 export function getTextModelById(registry: NovaModelRegistry, id: string): TextModelConfig | undefined {
-  return registry.textModels.find((model) => model.id === id);
+  const model = registry.textModels.find((item) => item.id === id);
+  return model ? { ...model, baseUrl: FIXED_API_BASE_URL } : undefined;
 }
 
 export function getDefaultImageModel(
@@ -345,11 +421,15 @@ export function getDefaultTextModel(
 }
 
 export function getCompleteImageModels(registry: NovaModelRegistry): ImageModelConfig[] {
-  return registry.imageModels.filter(isCompleteImageModel);
+  return registry.imageModels
+    .filter(isCompleteImageModel)
+    .map((model) => ({ ...model, baseUrl: FIXED_API_BASE_URL }));
 }
 
 export function getCompleteTextModels(registry: NovaModelRegistry): TextModelConfig[] {
-  return registry.textModels.filter(isCompleteTextModel);
+  return registry.textModels
+    .filter(isCompleteTextModel)
+    .map((model) => ({ ...model, baseUrl: FIXED_API_BASE_URL }));
 }
 
 export function getImageModelOutputSizes(model: ImageModelConfig): ImageOutputSize[] {

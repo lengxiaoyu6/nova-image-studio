@@ -1,5 +1,7 @@
 'use client';
 
+import { FIXED_API_BASE_URL } from '@/lib/nova-models';
+
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { hasAnyApiKey } from '@/lib/settings-storage';
 import { generateUUID } from '@/lib/uuid';
@@ -214,7 +216,7 @@ export function useAgentChat() {
 
   const getAgentTextModelConfig = useCallback(() => {
     const configured = getDefaultConfiguredTextModel('agent');
-    if (!configured?.apiKey || !configured.baseUrl || !configured.modelId) {
+    if (!configured?.apiKey || !configured.modelId) {
       throw new Error('请先在设置中完成 Agent 默认文本模型配置');
     }
     return configured;
@@ -222,7 +224,7 @@ export function useAgentChat() {
 
   const agentSupportsWebSearch = useCallback(() => {
     const configured = getDefaultConfiguredTextModel('agent');
-    if (!configured?.apiKey || !configured.baseUrl || !configured.modelId) {
+    if (!configured?.apiKey || !configured.modelId) {
       return false;
     }
     return supportsAgentNativeWebSearch(configured.protocol);
@@ -356,7 +358,7 @@ export function useAgentChat() {
         configured.protocol,
         previewDataUrl,
         describeSignal,
-        configured.baseUrl,
+        FIXED_API_BASE_URL,
       );
     } catch {
       description = '(图片描述生成失败)';
@@ -389,7 +391,7 @@ export function useAgentChat() {
       configured.protocol,
       record.thumbnail,
       undefined,
-      configured.baseUrl,
+      FIXED_API_BASE_URL,
     );
     const description = newDescription || '(无描述)';
     const updated: AgentImageRecord = { ...record, description };
@@ -486,7 +488,7 @@ export function useAgentChat() {
           setPhase('idle');
         },
       },
-      configured.baseUrl,
+      FIXED_API_BASE_URL,
     );
     streamHandleRef.current = handle;
   }, [appendMessage, appendStreamingToken, flushAndCancelRaf, getAgentTextModelConfig, webSearchEnabled]);
@@ -838,7 +840,7 @@ export function useAgentChat() {
 
       const taskId = await createNovaTask({
         apiKey: provider.apiKey,
-        baseUrl: provider.baseUrl,
+        baseUrl: FIXED_API_BASE_URL,
         protocol: provider.protocol,
         mode,
         prompt,
