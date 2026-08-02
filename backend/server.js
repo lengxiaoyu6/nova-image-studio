@@ -121,9 +121,11 @@ const DB_PATH = process.env.NOVA_TASK_DB || path.join(__dirname, 'nova-tasks.sql
 const TASK_TTL_MS = 12 * 60 * 60 * 1000;
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
-const IMAGE_STREAM_UNSUPPORTED_PATTERN = /(?:stream.*(?:unsupported|not supported|unknown|unrecognized|invalid)|(?:unsupported|not supported|unknown|unrecognized|invalid).*stream|stream.*(?:不支持|未知|无效)|(?:不支持|未知|无效).*stream)/i;
+const IMAGE_STREAM_ENABLED = String(process.env.NOVA_IMAGE_STREAM ?? 'true').toLowerCase() !== 'false';
+const IMAGE_STREAM_PARTIAL_IMAGES = Math.min(3, Math.max(0, Number.parseInt(process.env.NOVA_IMAGE_PARTIAL_IMAGES || '1', 10) || 1));
+const IMAGE_STREAM_UNSUPPORTED_PATTERN = /(?:(?:stream|partial_images).*(?:unsupported|not supported|unknown|unrecognized|invalid)|(?:unsupported|not supported|unknown|unrecognized|invalid).*(?:stream|partial_images)|(?:stream|partial_images).*(?:不支持|未知|无效)|(?:不支持|未知|无效).*(?:stream|partial_images))/i;
 // 开源版：不再硬编码模型列表，由前端通过 protocol 字段指定协议类型
-const VALID_PROTOCOLS = new Set(['google', 'openai']);
+const VALID_PROTOCOLS = new Set(['google', 'openai', 'grok']);
 const GPT_IMAGE_QUALITIES = new Set(['auto', 'high', 'medium', 'low']);
 const GPT_IMAGE_STYLES = new Set(['auto', 'vivid', 'natural']);
 const GPT_IMAGE_BACKGROUNDS = new Set(['auto', 'transparent', 'opaque']);
@@ -154,6 +156,11 @@ const pendingCountByIp = new Map(); // ip -> count
 const pendingCountByApiKeyHash = new Map(); // apiKeyHash -> count
 const queue = [];
 let activeCount = 0;
+const runningTaskPromises = new Set();
+let isShuttingDown = false;
+let shutdownPromise = null;
+let httpServerRef = null;
+let wsServerRef = null;
 
 // ===== WebSocket subscription state =====
 const taskSubscriptions = new Map(); // WebSocket -> Set<taskId>
@@ -331,7 +338,7 @@ function getQueueStats() {
   const processingCount = counts[TASK_STATUS.PROCESSING] || 0;
   const queuedCount = (counts[TASK_STATUS.QUEUED] || 0) + (counts[TASK_STATUS.LEGACY_QUEUED] || 0);
   const totalActiveTasks = processingCount + queuedCount;
-  const acceptingNewTasks = !isRejectNewTasksEnabled();
+  const acceptingNewTasks = !isShuttingDown && !isRejectNewTasksEnabled();
 
   return {
     concurrencyLimit: GLOBAL_TASK_CONCURRENCY,
@@ -644,8 +651,7 @@ function validateCreatePayload(body) {
   if (!body || typeof body !== 'object') throw new Error('请求体不能为空');
   if (typeof body.apiKey !== 'string' || body.apiKey.trim().length === 0) throw new Error('缺少 API 密钥');
   // baseUrl 已全局固定，不再要求客户端提供
-  // if (typeof body.baseUrl !== 'string' || body.baseUrl.trim().length === 0) throw new Error('缺少 API 基础地址');
-  if (!VALID_PROTOCOLS.has(body.protocol)) throw new Error('协议类型无效，必须为 google 或 openai');
+  if (!VALID_PROTOCOLS.has(body.protocol)) throw new Error('协议类型无效，必须为 google、openai 或 grok');
   if (body.mode !== 'text-to-image' && body.mode !== 'image-to-image') throw new Error('任务模式无效');
   if (typeof body.prompt !== 'string' || body.prompt.trim().length === 0) throw new Error('提示词不能为空');
   if (typeof body.model !== 'string' || body.model.trim().length === 0) throw new Error('模型名称不能为空');
@@ -658,12 +664,6 @@ function validateCreatePayload(body) {
   if (modelName.includes('grok') || modelName.startsWith('gpt-image')) {
     body.protocol = 'openai';
   }
-  {
-    const modelName = String(body.model || '').toLowerCase();
-    if (modelName.includes('grok') || modelName.startsWith('gpt-image')) {
-      body.protocol = 'openai';
-    }
-  }
   body.baseUrl = normalizeProtocolBaseUrl(body.protocol, FIXED_API_BASE_URL);
   if (!body.baseUrl) throw new Error('缺少 API 基础地址');
   // 开源版：不做模型级参数规范化，前端负责传递正确的参数，后端无条件透传
@@ -672,7 +672,7 @@ function validateCreatePayload(body) {
 function createTask(body, req) {
   validateCreatePayload(body);
   const limitConfig = getLimitConfig();
-  if (isRejectNewTasksEnabled()) {
+  if (isShuttingDown || isRejectNewTasksEnabled()) {
     throw createHttpError(503, 'SERVER_NOT_ACCEPTING_TASKS', LIMIT_ERROR_MESSAGES.notAcceptingTasks, limitConfig.retryAfterSeconds);
   }
   const source = enforceRateLimit(req, body, limitConfig);
@@ -823,55 +823,11 @@ function isGrokImageModel(model) {
   return String(model || '').toLowerCase().includes('grok');
 }
 
-/** Grok Imagine 使用 aspect_ratio + resolution，而不是 OpenAI 的 size/quality */
-function resolveGrokImageParams(request) {
-  const outputSize = String(request.outputSize || '1K').toUpperCase();
-  const resolution = outputSize === '2K' || outputSize === '4K' ? '2k' : '1k';
-
-  let aspectRatio = String(request.aspectRatio || '1:1').trim();
-  if (!aspectRatio || aspectRatio === 'auto') {
-    aspectRatio = '1:1';
-  }
-
-  return { resolution, aspect_ratio: aspectRatio };
-}
-
-function createGrokImageRequestInit(apiKey, request) {
-  const { resolution, aspect_ratio } = resolveGrokImageParams(request);
-  const payload = {
-    model: request.model,
-    prompt: request.prompt,
-    n: 1,
-    aspect_ratio,
-    resolution,
-    response_format: 'b64_json',
-  };
-
-  // 图生图：xAI 要求 JSON image 对象，而不是 GPT 的 multipart
-  if (request.mode === 'image-to-image' && Array.isArray(request.images) && request.images.length > 0) {
-    const first = request.images[0];
-    const mimeType = first.mimeType || 'image/png';
-    const dataUrl = `data:${mimeType};base64,${first.data}`;
-    payload.image = {
-      url: dataUrl,
-      type: 'image_url',
-    };
-  }
-
-  return {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(payload),
-  };
-}
-
 function createGptImageRequestInit(apiKey, request, resolvedSize, options = {}) {
   const prompt = request.prompt;
   const advancedParams = getGptImageRequestAdvancedParams(request);
   const stream = Boolean(options.stream);
+  const partialImages = Math.min(3, Math.max(0, Number(options.partialImages) || 0));
 
   if (request.mode === 'image-to-image') {
     const formData = new FormData();
@@ -880,6 +836,7 @@ function createGptImageRequestInit(apiKey, request, resolvedSize, options = {}) 
     formData.append('n', '1');
     if (stream) {
       formData.append('stream', 'true');
+      if (partialImages > 0) formData.append('partial_images', String(partialImages));
     }
     if (advancedParams) {
       formData.append('quality', advancedParams.quality);
@@ -913,7 +870,7 @@ function createGptImageRequestInit(apiKey, request, resolvedSize, options = {}) 
   const payload = {
     prompt,
     model: request.model,
-    ...(stream ? { stream: true } : {}),
+    ...(stream ? { stream: true, ...(partialImages > 0 ? { partial_images: partialImages } : {}) } : {}),
     ...(resolvedSize ? { size: resolvedSize } : {}),
     ...(advancedParams ? {
       quality: advancedParams.quality,
@@ -1130,6 +1087,92 @@ async function requestGptImage(apiKey, request, resolvedSize, options = {}) {
   return parseGptImageResponse(response);
 }
 
+function getGrokResolution(outputSize) {
+  if (outputSize === '2K' || outputSize === '2k') return '2k';
+  if (outputSize === '1K' || outputSize === '1k') return '1k';
+  return undefined;
+}
+
+function getGrokAspectRatio(aspectRatio) {
+  if (!aspectRatio || aspectRatio === 'auto') return undefined;
+  return String(aspectRatio);
+}
+
+function toGrokImageDataUrl(img) {
+  if (!img || typeof img !== 'object') return '';
+  if (typeof img.dataUrl === 'string' && img.dataUrl.startsWith('data:')) return img.dataUrl;
+  const mimeType = img.mimeType || 'image/png';
+  const data = typeof img.data === 'string' ? img.data : '';
+  if (!data) return '';
+  if (data.startsWith('data:')) return data;
+  return `data:${mimeType};base64,${data}`;
+}
+
+function createGrokImageRequestInit(apiKey, request, options = {}) {
+  const prompt = request.prompt;
+  const stream = Boolean(options.stream);
+  const aspectRatio = getGrokAspectRatio(request.aspectRatio);
+  const resolution = getGrokResolution(request.outputSize);
+  const images = Array.isArray(request.images) ? request.images : [];
+
+  if (request.mode === 'image-to-image') {
+    if (images.length === 0) {
+      throw new Error('图生图模式需要至少一张参考图');
+    }
+    const dataUrls = images.map(toGrokImageDataUrl).filter(Boolean);
+    if (dataUrls.length === 0) {
+      throw new Error('参考图数据无效');
+    }
+    const payload = {
+      model: request.model,
+      prompt,
+      response_format: 'url',
+      ...(stream ? { stream: true } : {}),
+      ...(aspectRatio ? { aspect_ratio: aspectRatio } : {}),
+      ...(resolution ? { resolution } : {}),
+      ...(dataUrls.length === 1 ? { image: dataUrls[0] } : { images: dataUrls }),
+    };
+    return {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(payload),
+    };
+  }
+
+  const payload = {
+    model: request.model,
+    prompt,
+    response_format: 'url',
+    ...(stream ? { stream: true } : {}),
+    ...(aspectRatio ? { aspect_ratio: aspectRatio } : {}),
+    ...(resolution ? { resolution } : {}),
+  };
+
+  return {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(payload),
+  };
+}
+
+async function requestGrokImage(apiKey, request, options = {}) {
+  const baseUrl = options.baseUrl || resolveNovaApiBaseUrl();
+  const endpoint = request.mode === 'image-to-image'
+    ? '/v1/images/edits'
+    : '/v1/images/generations';
+  const response = await fetchWithTimeout(
+    `${baseUrl}${endpoint}`,
+    createGrokImageRequestInit(apiKey, request, options)
+  );
+  return parseGptImageResponse(response);
+}
+
 // ===== 加强网络连接：启用 TCP keepalive，防止 Docker 回环连接被静默断开 =====
 // Node.js 内置 fetch 基于 undici，默认不发送 TCP keepalive，
 // 导致长时间等待响应（如 4K 图片生成）时连接被 Docker 网络层丢弃。
@@ -1164,15 +1207,34 @@ async function fetchWithTimeout(url, init) {
 async function generateNovaImage(apiKey, request) {
   const baseUrl = resolveNovaApiBaseUrl();
   const modelName = String(request.model || '').toLowerCase();
-  const forceOpenAiImages =
+  const shouldUseOpenAiImageEndpoint =
     request.protocol === 'openai'
     || modelName.includes('grok')
     || modelName.startsWith('gpt-image');
 
-  console.log(`[image] route: model=${request.model} protocol=${request.protocol} forceOpenAi=${forceOpenAiImages}`);
+  console.log(
+    `[image] route: model=${request.model} protocol=${request.protocol} openai=${shouldUseOpenAiImageEndpoint}`
+  );
 
-  if (forceOpenAiImages) {
-    return requestGptImage(apiKey, request, resolveGptImageRequestSize(request), { baseUrl });
+  if (shouldUseOpenAiImageEndpoint) {
+    const resolvedSize = resolveGptImageRequestSize(request);
+    if (!IMAGE_STREAM_ENABLED) {
+      return requestGptImage(apiKey, request, resolvedSize, { baseUrl });
+    }
+    try {
+      return await requestGptImage(apiKey, request, resolvedSize, {
+        baseUrl,
+        stream: true,
+        partialImages: IMAGE_STREAM_PARTIAL_IMAGES,
+      });
+    } catch (error) {
+      if (!isImageStreamUnsupportedError(error)) throw error;
+      console.warn('[image-stream] 上游不支持图片流式参数，回退非流式请求');
+      return requestGptImage(apiKey, request, resolvedSize, { baseUrl });
+    }
+  }
+  if (request.protocol === 'grok') {
+    return requestGrokImage(apiKey, request, { baseUrl });
   }
   return generateNovaGeminiImage(apiKey, request, { baseUrl });
 }
@@ -1240,10 +1302,12 @@ function drainQueue() {
 
     queue.shift();
     activeCount += imageSlots;
-    runTask(taskId).finally(() => {
+    const runPromise = runTask(taskId).finally(() => {
       activeCount -= imageSlots;
+      runningTaskPromises.delete(runPromise);
       drainQueue();
     });
+    runningTaskPromises.add(runPromise);
   }
 }
 
@@ -1553,6 +1617,93 @@ function setupWebSocketServer() {
   }, WS_HEARTBEAT_INTERVAL_MS).unref();
 
   return wss;
+}
+
+function closeHttpServer(server) {
+  if (!server || typeof server.close !== 'function') return Promise.resolve();
+  return new Promise(resolve => {
+    try {
+      server.close(() => resolve());
+    } catch {
+      resolve();
+    }
+  });
+}
+
+function closeWebSocketServer(wss) {
+  if (!wss || typeof wss.close !== 'function') return Promise.resolve();
+  for (const ws of wss.clients) {
+    try {
+      ws.close(1001, 'Server shutting down');
+    } catch {
+      // ignore
+    }
+  }
+  return new Promise(resolve => {
+    try {
+      wss.close(() => resolve());
+    } catch {
+      resolve();
+    }
+  });
+}
+
+async function waitForRunningTasks() {
+  const running = Array.from(runningTaskPromises);
+  if (running.length === 0) return;
+  await Promise.allSettled(running);
+}
+
+function checkpointTaskDatabase() {
+  try {
+    const result = db.pragma('wal_checkpoint(TRUNCATE)');
+    console.log('[shutdown] SQLite WAL checkpoint 完成', result);
+  } catch (error) {
+    console.warn('[shutdown] SQLite WAL checkpoint 失败', error?.message || error);
+  }
+}
+
+function closeTaskDatabase() {
+  try {
+    db.close();
+  } catch (error) {
+    console.warn('[shutdown] SQLite 关闭失败', error?.message || error);
+  }
+}
+
+function registerShutdownHandlers() {
+  const handleShutdownSignal = signal => {
+    if (shutdownPromise) return shutdownPromise;
+
+    shutdownPromise = (async () => {
+      isShuttingDown = true;
+      console.log(`[shutdown] 收到 ${signal}，开始优雅退出`);
+
+      await Promise.allSettled([
+        closeHttpServer(httpServerRef),
+        closeWebSocketServer(wsServerRef),
+      ]);
+
+      await waitForRunningTasks();
+      checkpointTaskDatabase();
+      closeTaskDatabase();
+      process.exit(0);
+    })().catch(error => {
+      console.error('[shutdown] 优雅退出失败', error);
+      closeTaskDatabase();
+      process.exit(1);
+    });
+
+    return shutdownPromise;
+  };
+
+  process.on('SIGTERM', () => {
+    void handleShutdownSignal('SIGTERM');
+  });
+
+  process.on('SIGINT', () => {
+    void handleShutdownSignal('SIGINT');
+  });
 }
 
 async function handleApi(req, res, pathname) {
@@ -1900,7 +2051,12 @@ const startServer = () => {
       console.log(`Listening on ${listenUrl}`);
     }
   });
+
+  wsServerRef = wss;
+  httpServerRef = httpServer;
 };
+
+registerShutdownHandlers();
 
 if (IS_DEV) {
   app.prepare().then(startServer);
