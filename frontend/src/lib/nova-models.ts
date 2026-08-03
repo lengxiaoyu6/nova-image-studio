@@ -215,6 +215,29 @@ export const DEFAULT_DEFAULTS: DefaultModels = {
   imageDescribe: '',
 };
 
+const DEFAULT_IMAGE_MODEL: ImageModelConfig = {
+  id: 'default-gpt-image-2',
+  protocol: 'openai',
+  name: 'gpt-image-2',
+  modelId: 'gpt-image-2',
+  apiKey: '',
+  baseUrl: FIXED_API_BASE_URL,
+  builtinPreset: 'gpt-image-2',
+  maxRefImages: 16,
+  maxOutputSize: '4K',
+  supportsAdvancedParams: true,
+};
+
+const DEFAULT_TEXT_MODEL: TextModelConfig = {
+  id: 'default-gpt-5-6-terra',
+  protocol: 'openai-responses',
+  name: 'gpt-5.6-terra',
+  modelId: 'gpt-5.6-terra',
+  apiKey: '',
+  baseUrl: FIXED_API_BASE_URL,
+  note: getTextProviderDescription('openai-responses'),
+};
+
 function isProviderProtocol(value: unknown): value is ProviderProtocol {
   return value === 'google' || value === 'openai' || value === 'grok';
 }
@@ -337,9 +360,9 @@ function ensureDefaults(raw: Partial<DefaultModels> | undefined, imageModels: Im
 
 function getInitialRegistry(): NovaModelRegistry {
   return {
-    imageModels: [],
-    textModels: [],
-    defaults: DEFAULT_DEFAULTS,
+    imageModels: [{ ...DEFAULT_IMAGE_MODEL }],
+    textModels: [{ ...DEFAULT_TEXT_MODEL }],
+    defaults: { ...DEFAULT_DEFAULTS },
   };
 }
 
