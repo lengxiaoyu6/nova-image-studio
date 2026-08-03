@@ -8,7 +8,6 @@ import { ReversePromptForm } from '@/components/ReversePromptForm';
 import { GifGenerationWorkspace } from '@/components/GifGenerationWorkspace';
 import { AgentChatWorkspace } from '@/components/agent/AgentChatWorkspace';
 import { AssetsWorkspace } from '@/components/assets/AssetsWorkspace';
-import { CanvasWorkspace } from '@/components/canvas/CanvasWorkspace';
 import { PromptGallery } from '@/components/PromptGallery';
 import { SettingsModal } from '@/components/SettingsModal';
 import { MissingApiKeyDialog } from '@/components/MissingApiKeyDialog';
@@ -51,7 +50,7 @@ export function WorkspaceShell() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [missingApiKeyDialogOpen, setMissingApiKeyDialogOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'image-generation' | 'agent' | 'canvas' | 'assets' | 'reverse-prompt' | 'gif' | 'prompt-gallery'>('agent');
+  const [activeTab, setActiveTab] = useState<'image-generation' | 'agent' | 'assets' | 'reverse-prompt' | 'gif' | 'prompt-gallery'>('agent');
   const [generationHistoryFilter, setGenerationHistoryFilter] = useState<GenerationHistoryFilter>('all');
   const [generationClearScope, setGenerationClearScope] = useState<HistoryClearScope | null>(null);
   const [referenceDraft, setReferenceDraft] = useState<{ id: number; refImages: RefImageData[]; prompt?: string } | null>(null);
@@ -395,16 +394,6 @@ export function WorkspaceShell() {
                   wideMode={wideMode}
                   disabled={!workspace.hasApiKey}
                   onConfigureApiKey={() => setSettingsOpen(true)}
-                />
-              </TabsContent>
-
-              <TabsContent value="canvas" keepMounted className={cn('min-h-0', wideMode ? 'xl:flex xl:min-h-0 xl:flex-1 xl:flex-col' : 'space-y-6')}>
-                <CanvasWorkspace
-                  wideMode={wideMode}
-                  onConfigureApiKey={() => setSettingsOpen(true)}
-                  onEnableWideMode={() => { if (!wideMode) toggleWideMode(); }}
-                  showToast={showToast}
-                  showPromptGallery={promptGallery.showPromptGallery}
                 />
               </TabsContent>
 
