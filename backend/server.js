@@ -870,6 +870,8 @@ function createGptImageRequestInit(apiKey, request, resolvedSize, options = {}) 
   const payload = {
     prompt,
     model: request.model,
+    // 每个任务由服务端独立发起一次请求，兼容端点仍要求显式提供有效的 n。
+    n: 1,
     ...(stream ? { stream: true, ...(partialImages > 0 ? { partial_images: partialImages } : {}) } : {}),
     ...(resolvedSize ? { size: resolvedSize } : {}),
     ...(advancedParams ? {
