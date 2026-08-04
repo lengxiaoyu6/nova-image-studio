@@ -47,6 +47,10 @@ describe('backend GPT Image advanced params forwarding', () => {
     expect(serverSource).toContain("/v1/images/generations");
   });
 
+  it('disables streaming for image edits while retaining generation streaming', () => {
+    expect(serverSource).toContain("if (!IMAGE_STREAM_ENABLED || request.mode === 'image-to-image')");
+    expect(serverSource).toContain('stream: true');
+  });
   it('resolves and forwards size for OpenAI image requests', () => {
     expect(serverSource).toContain('function resolveGptImageRequestSize(request)');
     expect(serverSource).toContain('const customSize = normalizeCustomImageSize(request.customSize, 4096)');

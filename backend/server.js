@@ -1186,50 +1186,31 @@ function createGrokImageRequestInit(apiKey, request, options = {}) {
   const images = Array.isArray(request.images) ? request.images : [];
 
   if (request.mode === 'image-to-image') {
-    const useOaiApisCompatibility = usesOaiApisImageEditCompatibility(request.model);
-    const formData = new FormData();
-    formData.append('model', request.model);
-    formData.append('prompt', prompt);
-    if (useOaiApisCompatibility) {
-      formData.append('response_format', 'b64_json');
-    } else {
-      formData.append('n', '1');
+    if (images.length === 0) {
+      throw new Error('图生图模式需要至少一张参考图');
     }
-    if (stream) {
-      formData.append('stream', 'true');
-      if (!useOaiApisCompatibility && partialImages > 0) {
-        formData.append('partial_images', String(partialImages));
-      }
+    const dataUrls = images.map(toGrokImageDataUrl).filter(Boolean);
+    if (dataUrls.length === 0) {
+      throw new Error('参考图数据无效');
     }
-    if (!useOaiApisCompatibility && advancedParams) {
-      formData.append('quality', advancedParams.quality);
-      formData.append('background', advancedParams.background);
-      formData.append('output_format', 'png');
-      if (advancedParams.style === 'vivid' || advancedParams.style === 'natural') {
-        formData.append('style', advancedParams.style);
-      }
-    }
-    if (resolvedSize) {
-      formData.append('size', resolvedSize);
-    }
-
-    request.images.forEach((img, index) => {
-      const mimeType = img.mimeType || 'image/png';
-      const extension = mimeType.split('/')[1] || 'png';
-      const bytes = Buffer.from(img.data, 'base64');
-      const blob = new Blob([bytes], { type: mimeType });
-      formData.append(useOaiApisCompatibility ? 'image[]' : 'image', blob, `image-${index}.${extension}`);
-    });
-
+    const payload = {
+      model: request.model,
+      prompt,
+      response_format: 'url',
+      ...(stream ? { stream: true } : {}),
+      ...(aspectRatio ? { aspect_ratio: aspectRatio } : {}),
+      ...(resolution ? { resolution } : {}),
+      ...(dataUrls.length === 1 ? { image: dataUrls[0] } : { images: dataUrls }),
+    };
     return {
       method: 'POST',
       headers: {
+        'Content-Type': 'application/json',
         'Authorization': `Bearer ${apiKey}`,
       },
-      body: formData,
+      body: JSON.stringify(payload),
     };
   }
-
   const payload = {
     model: request.model,
     prompt,
@@ -1306,7 +1287,7 @@ async function generateNovaImage(apiKey, request) {
 
   if (shouldUseOpenAiImageEndpoint) {
     const resolvedSize = resolveGptImageRequestSize(request);
-    if (!IMAGE_STREAM_ENABLED) {
+    if (!IMAGE_STREAM_ENABLED || request.mode === 'image-to-image') {
       return requestGptImageWithEditFallback(apiKey, request, resolvedSize, { baseUrl });
     }
     try {
