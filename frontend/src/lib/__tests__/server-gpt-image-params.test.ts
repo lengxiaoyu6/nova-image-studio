@@ -18,13 +18,12 @@ describe('backend GPT Image advanced params forwarding', () => {
     expect(serverSource).not.toContain('supportsGptImageAdvancedParams(');
   });
 
-  it('forwards quality/background/output_format and conditional style in multipart edits', () => {
-    expect(serverSource).toContain("formData.append('quality', advancedParams.quality)");
-    expect(serverSource).toContain("formData.append('background', advancedParams.background)");
-    expect(serverSource).toContain("formData.append('output_format', 'png')");
+  it('uses the upstream-compatible multipart fields for image edits', () => {
     expect(serverSource).toContain("formData.append('response_format', 'b64_json')");
     expect(serverSource).toContain("formData.append('image[]', blob");
-    expect(serverSource).toContain("formData.append('style', advancedParams.style)");
+    expect(serverSource).not.toContain("formData.append('stream', 'true')");
+    expect(serverSource).not.toContain("formData.append('partial_images', String(partialImages))");
+    expect(serverSource).toContain("!IMAGE_STREAM_ENABLED || request.mode === 'image-to-image'");
   });
 
   it('forwards quality/background/output_format and conditional style in JSON generations', () => {

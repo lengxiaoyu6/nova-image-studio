@@ -867,18 +867,6 @@ function createGptImageRequestInit(apiKey, request, resolvedSize, options = {}) 
     formData.append('model', request.model);
     formData.append('prompt', prompt);
     formData.append('response_format', 'b64_json');
-    if (stream) {
-      formData.append('stream', 'true');
-      if (partialImages > 0) formData.append('partial_images', String(partialImages));
-    }
-    if (advancedParams) {
-      formData.append('quality', advancedParams.quality);
-      formData.append('background', advancedParams.background);
-      formData.append('output_format', 'png');
-      if (advancedParams.style === 'vivid' || advancedParams.style === 'natural') {
-        formData.append('style', advancedParams.style);
-      }
-    }
     if (resolvedSize) {
       formData.append('size', resolvedSize);
     }
@@ -1277,7 +1265,7 @@ async function generateNovaImage(apiKey, request) {
 
   if (shouldUseOpenAiImageEndpoint) {
     const resolvedSize = resolveGptImageRequestSize(request);
-    if (!IMAGE_STREAM_ENABLED) {
+    if (!IMAGE_STREAM_ENABLED || request.mode === 'image-to-image') {
       return requestGptImageWithEditFallback(apiKey, request, resolvedSize, { baseUrl });
     }
     try {
