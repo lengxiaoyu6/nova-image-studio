@@ -823,6 +823,38 @@ function isGrokImageModel(model) {
   return String(model || '').toLowerCase().includes('grok');
 }
 
+function createGptImageJsonEditFallbackInit(apiKey, request, resolvedSize, options = {}) {
+  // 部分兼容服务将 multipart 数字字段视为无效值，使用 JSON 数据 URL 形式重试。
+  const advancedParams = getGptImageRequestAdvancedParams(request);
+  const stream = Boolean(options.stream);
+  const partialImages = Math.min(3, Math.max(0, Number(options.partialImages) || 0));
+  const images = (Array.isArray(request.images) ? request.images : []).map(img => {
+    const mimeType = img?.mimeType || 'image/png';
+    return `data:${mimeType};base64,${img?.data || ''}`;
+  });
+  const payload = {
+    prompt: request.prompt,
+    model: request.model,
+    n: 1,
+    ...(stream ? { stream: true, ...(partialImages > 0 ? { partial_images: partialImages } : {}) } : {}),
+    ...(resolvedSize ? { size: resolvedSize } : {}),
+    ...(advancedParams ? {
+      quality: advancedParams.quality,
+      background: advancedParams.background,
+      output_format: 'png',
+      ...(advancedParams.style === 'vivid' || advancedParams.style === 'natural' ? { style: advancedParams.style } : {}),
+    } : {}),
+    ...(images.length > 0 ? { image: images } : {}),
+  };
+  return {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(payload),
+  };
+}
 function createGptImageRequestInit(apiKey, request, resolvedSize, options = {}) {
   const prompt = request.prompt;
   const advancedParams = getGptImageRequestAdvancedParams(request);
@@ -1079,7 +1111,9 @@ async function requestGptImage(apiKey, request, resolvedSize, options = {}) {
   // Grok Imagine 请求体与 GPT Image 不同：aspect_ratio + resolution，禁止 quality/size 等字段
   const init = isGrokImageModel(request.model)
     ? createGrokImageRequestInit(apiKey, request)
-    : createGptImageRequestInit(apiKey, request, resolvedSize, options);
+    : options.jsonImageEditFallback
+      ? createGptImageJsonEditFallbackInit(apiKey, request, resolvedSize, options)
+      : createGptImageRequestInit(apiKey, request, resolvedSize, options);
 
   console.log(
     `[image] request: model=${request.model} mode=${request.mode} url=${targetUrl} grok=${isGrokImageModel(request.model)}`
@@ -1087,6 +1121,28 @@ async function requestGptImage(apiKey, request, resolvedSize, options = {}) {
 
   const response = await fetchWithTimeout(targetUrl, init);
   return parseGptImageResponse(response);
+}
+
+function isImageEditNValidationError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /\bn\b[\s\S]*?(?:integer|整数)|(?:integer|整数)[\s\S]*?\bn\b/i.test(message);
+}
+
+async function requestGptImageWithEditFallback(apiKey, request, resolvedSize, options = {}) {
+  try {
+    return await requestGptImage(apiKey, request, resolvedSize, options);
+  } catch (error) {
+    if (request.mode !== 'image-to-image' || isGrokImageModel(request.model) || !isImageEditNValidationError(error)) {
+      throw error;
+    }
+    console.warn('[image] multipart 图生图的 n 参数校验失败，改用 JSON 请求重试');
+    return requestGptImage(apiKey, request, resolvedSize, {
+      ...options,
+      stream: false,
+      partialImages: 0,
+      jsonImageEditFallback: true,
+    });
+  }
 }
 
 function getGrokResolution(outputSize) {
@@ -1221,10 +1277,10 @@ async function generateNovaImage(apiKey, request) {
   if (shouldUseOpenAiImageEndpoint) {
     const resolvedSize = resolveGptImageRequestSize(request);
     if (!IMAGE_STREAM_ENABLED) {
-      return requestGptImage(apiKey, request, resolvedSize, { baseUrl });
+      return requestGptImageWithEditFallback(apiKey, request, resolvedSize, { baseUrl });
     }
     try {
-      return await requestGptImage(apiKey, request, resolvedSize, {
+      return await requestGptImageWithEditFallback(apiKey, request, resolvedSize, {
         baseUrl,
         stream: true,
         partialImages: IMAGE_STREAM_PARTIAL_IMAGES,
@@ -1232,7 +1288,7 @@ async function generateNovaImage(apiKey, request) {
     } catch (error) {
       if (!isImageStreamUnsupportedError(error)) throw error;
       console.warn('[image-stream] 上游不支持图片流式参数，回退非流式请求');
-      return requestGptImage(apiKey, request, resolvedSize, { baseUrl });
+      return requestGptImageWithEditFallback(apiKey, request, resolvedSize, { baseUrl });
     }
   }
   if (request.protocol === 'grok') {

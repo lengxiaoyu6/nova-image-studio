@@ -33,6 +33,12 @@ describe('backend GPT Image advanced params forwarding', () => {
     expect(serverSource).toContain("advancedParams.style === 'vivid' || advancedParams.style === 'natural' ? { style: advancedParams.style } : {}");
   });
 
+  it('retries an image edit as JSON only when multipart n validation fails', () => {
+    expect(serverSource).toContain('function createGptImageJsonEditFallbackInit');
+    expect(serverSource).toContain("'Content-Type': 'application/json'");
+    expect(serverSource).toContain('function requestGptImageWithEditFallback');
+    expect(serverSource).toContain('jsonImageEditFallback: true');
+  });
   it('routes OpenAI image endpoint by mode rather than legacy model names', () => {
     expect(serverSource).toContain("request.mode === 'image-to-image'");
     expect(serverSource).toContain("/v1/images/edits");
@@ -44,6 +50,6 @@ describe('backend GPT Image advanced params forwarding', () => {
     expect(serverSource).toContain('const customSize = normalizeCustomImageSize(request.customSize, 4096)');
     expect(serverSource).toContain('return getSupportedGptImageSize(request.model, request.outputSize, request.aspectRatio)');
     expect(serverSource).toContain('const resolvedSize = resolveGptImageRequestSize(request)');
-    expect(serverSource).toContain('return requestGptImage(apiKey, request, resolvedSize, { baseUrl });');
+    expect(serverSource).toContain('return requestGptImageWithEditFallback(apiKey, request, resolvedSize, { baseUrl });');
   });
 });
