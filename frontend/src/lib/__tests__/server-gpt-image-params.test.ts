@@ -22,6 +22,8 @@ describe('backend GPT Image advanced params forwarding', () => {
     expect(serverSource).toContain("formData.append('quality', advancedParams.quality)");
     expect(serverSource).toContain("formData.append('background', advancedParams.background)");
     expect(serverSource).toContain("formData.append('output_format', 'png')");
+    expect(serverSource).toContain("formData.append('response_format', 'b64_json')");
+    expect(serverSource).toContain("formData.append('image[]', blob");
     expect(serverSource).toContain("formData.append('style', advancedParams.style)");
   });
 

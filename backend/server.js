@@ -844,7 +844,8 @@ function createGptImageJsonEditFallbackInit(apiKey, request, resolvedSize, optio
       output_format: 'png',
       ...(advancedParams.style === 'vivid' || advancedParams.style === 'natural' ? { style: advancedParams.style } : {}),
     } : {}),
-    ...(images.length > 0 ? { image: images } : {}),
+    response_format: 'b64_json',
+    ...(images.length > 0 ? { images: images.map(image_url => ({ image_url })) } : {}),
   };
   return {
     method: 'POST',
@@ -865,7 +866,7 @@ function createGptImageRequestInit(apiKey, request, resolvedSize, options = {}) 
     const formData = new FormData();
     formData.append('model', request.model);
     formData.append('prompt', prompt);
-    formData.append('n', '1');
+    formData.append('response_format', 'b64_json');
     if (stream) {
       formData.append('stream', 'true');
       if (partialImages > 0) formData.append('partial_images', String(partialImages));
@@ -887,7 +888,7 @@ function createGptImageRequestInit(apiKey, request, resolvedSize, options = {}) 
       const extension = mimeType.split('/')[1] || 'png';
       const bytes = Buffer.from(img.data, 'base64');
       const blob = new Blob([bytes], { type: mimeType });
-      formData.append('image', blob, `image-${index}.${extension}`);
+      formData.append('image[]', blob, `image-${index}.${extension}`);
     });
 
     return {
