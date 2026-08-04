@@ -21,9 +21,8 @@ describe('backend GPT Image advanced params forwarding', () => {
   it('uses the upstream-compatible multipart fields for image edits', () => {
     expect(serverSource).toContain("formData.append('response_format', 'b64_json')");
     expect(serverSource).toContain("formData.append('image[]', blob");
-    expect(serverSource).not.toContain("formData.append('stream', 'true')");
+    expect(serverSource).toContain("formData.append('stream', 'true')");
     expect(serverSource).not.toContain("formData.append('partial_images', String(partialImages))");
-    expect(serverSource).toContain("!IMAGE_STREAM_ENABLED || request.mode === 'image-to-image'");
   });
 
   it('forwards quality/background/output_format and conditional style in JSON generations', () => {

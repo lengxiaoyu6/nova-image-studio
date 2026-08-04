@@ -867,6 +867,9 @@ function createGptImageRequestInit(apiKey, request, resolvedSize, options = {}) 
     formData.append('model', request.model);
     formData.append('prompt', prompt);
     formData.append('response_format', 'b64_json');
+    if (stream) {
+      formData.append('stream', 'true');
+    }
     if (resolvedSize) {
       formData.append('size', resolvedSize);
     }
@@ -1265,7 +1268,7 @@ async function generateNovaImage(apiKey, request) {
 
   if (shouldUseOpenAiImageEndpoint) {
     const resolvedSize = resolveGptImageRequestSize(request);
-    if (!IMAGE_STREAM_ENABLED || request.mode === 'image-to-image') {
+    if (!IMAGE_STREAM_ENABLED) {
       return requestGptImageWithEditFallback(apiKey, request, resolvedSize, { baseUrl });
     }
     try {
