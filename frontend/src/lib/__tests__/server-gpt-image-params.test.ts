@@ -18,11 +18,13 @@ describe('backend GPT Image advanced params forwarding', () => {
     expect(serverSource).not.toContain('supportsGptImageAdvancedParams(');
   });
 
-  it('uses the upstream-compatible multipart fields for image edits', () => {
+  it('limits OAI image edit compatibility fields to gpt-image-2', () => {
+    expect(serverSource).toContain('function usesOaiApisImageEditCompatibility(model)');
+    expect(serverSource).toContain("=== 'gpt-image-2'");
     expect(serverSource).toContain("formData.append('response_format', 'b64_json')");
-    expect(serverSource).toContain("formData.append('image[]', blob");
-    expect(serverSource).toContain("formData.append('stream', 'true')");
-    expect(serverSource).not.toContain("formData.append('partial_images', String(partialImages))");
+    expect(serverSource).toContain("formData.append('n', '1')");
+    expect(serverSource).toContain("!useOaiApisCompatibility && partialImages > 0");
+    expect(serverSource).toContain("useOaiApisCompatibility ? 'image[]' : 'image'");
   });
 
   it('forwards quality/background/output_format and conditional style in JSON generations', () => {
